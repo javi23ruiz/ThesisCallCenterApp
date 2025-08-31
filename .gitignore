@@ -1,0 +1,7 @@
+.venv/
+.env
+__pycache__/
+.DS_Store
+node_modules/
+backend/google_tts_credentials.json
+

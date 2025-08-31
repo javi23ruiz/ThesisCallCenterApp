@@ -10,6 +10,8 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableWithMessageHistory
 from langchain_core.chat_history import InMemoryChatMessageHistory, BaseChatMessageHistory
+from fastapi import UploadFile, File, Form
+from google.cloud import speech
 
 
 app = FastAPI(title="Thesis Call Center API")
@@ -80,6 +82,19 @@ if _openai_api_key:
         history_messages_key="history",
     )
 
+# --- Google Speech-to-Text setup ---
+_speech_client: Optional[speech.SpeechClient] = None
+_gcp_credentials_path = os.geten
+("GOOGLE_APPLICATION_CREDENTIALS")
+try:
+    if _gcp_credentials_path and os.path.exists(_gcp_credentials_path):
+        _speech_client = speech.SpeechClient()
+    else:
+        # Attempt default credentials (e.g., if set via environment or local ADC)
+        _speech_client = speech.SpeechClient()
+except Exception:
+    _speech_client = None
+
 
 @app.post("/ask")
 def ask(req: AskRequest) -> dict:
@@ -97,6 +112,47 @@ def ask(req: AskRequest) -> dict:
         config={"configurable": {"session_id": session_id}},
     )
     return {"answer": answer}
+
+
+@app.post("/stt")
+async def stt(
+    audio: UploadFile = File(...),
+    language_code: str = Form("en-US"),
+) -> dict:
+    if _speech_client is None:
+        return {"text": "", "error": "Speech client not configured. Set GOOGLE_APPLICATION_CREDENTIALS and restart."}
+
+    data = await audio.read()
+    if not data:
+        return {"text": "", "error": "Empty audio."}
+
+    try:
+        # Try to infer encoding from uploaded MIME type
+        mime = (audio.content_type or "").lower()
+        if "ogg" in mime:
+            encoding = speech.RecognitionConfig.AudioEncoding.OGG_OPUS
+        elif "webm" in mime:
+            encoding = speech.RecognitionConfig.AudioEncoding.WEBM_OPUS
+        elif "mp3" in mime:
+            encoding = speech.RecognitionConfig.AudioEncoding.MP3
+        elif "wav" in mime or "x-wav" in mime or "wave" in mime:
+            encoding = speech.RecognitionConfig.AudioEncoding.LINEAR16
+        else:
+            # reasonable default for modern browsers
+            encoding = speech.RecognitionConfig.AudioEncoding.WEBM_OPUS
+
+        audio_msg = speech.RecognitionAudio(content=data)
+        config = speech.RecognitionConfig(
+            encoding=encoding,
+            enable_automatic_punctuation=True,
+            language_code=language_code,
+        )
+        response = _speech_client.recognize(config=config, audio=audio_msg)
+        transcript_parts = [result.alternatives[0].transcript for result in response.results if result.alternatives]
+        transcript = " ".join(transcript_parts).strip()
+        return {"text": transcript}
+    except Exception as e:
+        return {"text": "", "error": str(e)}
 
 
 # Helpful for `python backend/server.py` during local development

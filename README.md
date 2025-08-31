@@ -19,6 +19,10 @@ pip install -r requirements.txt
 export OPENAI_API_KEY=your_api_key_here
 # Optional: choose a model (default: gpt-4o-mini)
 export OPENAI_API_MODEL=gpt-4o-mini
+
+# Google Cloud Speech-to-Text (voice input)
+# Provide Application Default Credentials via a JSON credentials file path
+export GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/credentials.json
 ```
 
 3. Run the API locally:
@@ -29,7 +33,8 @@ uvicorn backend.server:app --host 0.0.0.0 --port 8000 --reload
 
 Endpoints:
 - `GET /health` → health check
-- `POST /ask` → body: `{ "question": "..." }` → returns `{ "answer": "<AI reply as a live call center agent>" }`
+- `POST /ask` → body: `{ "question": "...", "session_id": "<id>" }` → returns `{ "answer": "<AI reply as a live call center agent>" }`
+- `POST /stt` → multipart form data with `audio` (webm/opus) → returns `{ "text": "transcript" }`
 
 ## Frontend
 
@@ -43,3 +48,7 @@ python3 -m http.server 5500
 ```
 
 Then navigate to `http://localhost:5500`.
+
+### Voice input
+- Click the phone button to start/stop recording. It records WebM/Opus and sends it to `/stt`.
+- The transcript is posted to `/ask` using your persistent session to preserve memory.
