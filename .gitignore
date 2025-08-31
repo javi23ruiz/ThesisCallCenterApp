@@ -1,5 +1,7 @@
 .venv/
 .env
+**/.env
+backend/.env
 __pycache__/
 .DS_Store
 node_modules/
