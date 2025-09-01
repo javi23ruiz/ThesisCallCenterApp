@@ -11,7 +11,13 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableWithMessageHistory
 from langchain_core.chat_history import InMemoryChatMessageHistory, BaseChatMessageHistory
 from fastapi import UploadFile, File, Form
+from fastapi import WebSocket, WebSocketDisconnect, Body
 from google.cloud import speech
+from google.cloud import texttospeech
+import asyncio
+from queue import Queue
+import threading
+from fastapi.responses import Response, JSONResponse
 
 
 app = FastAPI(title="Thesis Call Center API")
@@ -84,16 +90,25 @@ if _openai_api_key:
 
 # --- Google Speech-to-Text setup ---
 _speech_client: Optional[speech.SpeechClient] = None
-_gcp_credentials_path = os.geten
-("GOOGLE_APPLICATION_CREDENTIALS")
+_speech_init_error: Optional[str] = None
+_gcp_credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 try:
     if _gcp_credentials_path and os.path.exists(_gcp_credentials_path):
-        _speech_client = speech.SpeechClient()
+        # Use explicit service account file to avoid ADC ambiguity
+        _speech_client = speech.SpeechClient.from_service_account_file(_gcp_credentials_path)
     else:
-        # Attempt default credentials (e.g., if set via environment or local ADC)
+        # Attempt default credentials (gcloud auth/application default)
         _speech_client = speech.SpeechClient()
-except Exception:
+except Exception as e:
     _speech_client = None
+    _speech_init_error = str(e)
+
+# --- Google Text-to-Speech setup ---
+_tts_client: Optional[texttospeech.TextToSpeechClient] = None
+try:
+    _tts_client = texttospeech.TextToSpeechClient()
+except Exception:
+    _tts_client = None
 
 
 @app.post("/ask")
@@ -120,7 +135,7 @@ async def stt(
     language_code: str = Form("en-US"),
 ) -> dict:
     if _speech_client is None:
-        return {"text": "", "error": "Speech client not configured. Set GOOGLE_APPLICATION_CREDENTIALS and restart."}
+        return {"text": "", "error": f"Speech client not configured. {_speech_init_error or 'Set GOOGLE_APPLICATION_CREDENTIALS and restart.'}"}
 
     data = await audio.read()
     if not data:
@@ -153,6 +168,87 @@ async def stt(
         return {"text": transcript}
     except Exception as e:
         return {"text": "", "error": str(e)}
+
+
+@app.websocket("/stt/stream")
+async def stt_stream(ws: WebSocket):
+    await ws.accept()
+    if _speech_client is None:
+        await ws.send_json({"error": "Speech client not configured"})
+        await ws.close()
+        return
+
+    # Prepare streaming config
+    streaming_config = speech.StreamingRecognitionConfig(
+        config=speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=16000,
+            language_code="en-US",
+            enable_automatic_punctuation=True,
+            enable_word_time_offsets=False,
+        ),
+        interim_results=True,
+        single_utterance=False,
+    )
+
+    loop = asyncio.get_event_loop()
+    audio_queue: Queue[Optional[bytes]] = Queue()
+
+    def request_generator():
+        while True:
+            chunk = audio_queue.get()
+            if chunk is None:
+                break
+            yield speech.StreamingRecognizeRequest(audio_content=chunk)
+
+    def recognizer():
+        try:
+            # Pass config explicitly; generator yields only audio chunks
+            responses = _speech_client.streaming_recognize(
+                config=streaming_config,
+                requests=request_generator(),
+            )
+            for response in responses:
+                for result in response.results:
+                    text = result.alternatives[0].transcript if result.alternatives else ""
+                    asyncio.run_coroutine_threadsafe(
+                        ws.send_json({"text": text, "is_final": result.is_final}),
+                        loop,
+                    )
+        except Exception as e:
+            asyncio.run_coroutine_threadsafe(ws.send_json({"error": str(e)}), loop)
+
+    thread = threading.Thread(target=recognizer, daemon=True)
+    thread.start()
+
+    try:
+        while True:
+            msg = await ws.receive()
+            if "bytes" in msg and msg["bytes"] is not None:
+                audio_queue.put(msg["bytes"]) 
+            elif msg.get("type") in ("websocket.disconnect",):
+                break
+            else:
+                # Text message used as control message: "STOP"
+                if msg.get("text") == "STOP":
+                    break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        audio_queue.put(None)
+        await ws.close()
+
+
+@app.post("/tts")
+def tts(text: str = Body(..., media_type="text/plain")):
+    if _tts_client is None:
+        return JSONResponse({"error": "TTS client not configured. Set GOOGLE_APPLICATIONS_CREDENTIALS."}, status_code=500)
+
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+    voice = texttospeech.VoiceSelectionParams(language_code="en-US", ssml_gender=texttospeech.SsmlVoiceGender.FEMALE)
+    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3, speaking_rate=1.0)
+    response = _tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+    return Response(content=response.audio_content, media_type="audio/mpeg")
 
 
 # Helpful for `python backend/server.py` during local development
