@@ -17,6 +17,7 @@
 
       <main class="content">
         <section class="chat">
+          <h2 class="section-title">Conversation</h2>
           <div id="messages" class="messages"></div>
           <form id="chat-form" class="composer">
             <button type="button" class="btn btn-settings" title="Settings">⚙️</button>
@@ -26,35 +27,19 @@
           </form>
         </section>
 
-        <aside class="sidebar">
-          <div class="card">
-            <div class="card-header">
-              <span class="tag">Car Insurance</span>
-              <span class="muted">Policy #: CI-2024-8829</span>
-              <span class="muted">Updated: Jan 2024</span>
-            </div>
-            <h3>Section 4.2: Roadside Assistance</h3>
-            <div class="highlight">
-              <strong>Towing Services:</strong> Your policy includes complimentary towing services for up to 50 kilometers from the point of breakdown.
-            </div>
-            <ul class="bullets">
-              <li>24/7 availability throughout the coverage area</li>
-              <li>No limit on the number of service calls per year</li>
-              <li>Includes battery jump–start and tire change services</li>
-              <li>Emergency fuel delivery (fuel cost not included)</li>
-            </ul>
-          </div>
-
-          <div class="card">
-            <div class="card-header">
-              <span class="tag tag-secondary">Terms &amp; Conditions</span>
-              <span class="muted">Version: 2.1</span>
-            </div>
-            <h3>Emergency Services Protocol</h3>
-            <p class="muted">To access towing and roadside assistance services, contact our 24-hour emergency hotline.</p>
-          </div>
+        <aside class="sidebar" id="rag-container">
+          <h2 class="section-title">Retrieved Content</h2>
+          <div id="rag-list" class="rag-list"></div>
         </aside>
       </main>
+    </div>
+
+    <!-- RAG progress popup -->
+    <div id="rag-popup" class="popup" aria-hidden="true">
+      <div class="popup-box">
+        <div class="spinner" aria-hidden="true"></div>
+        <div class="popup-text">RAG pipeline: search in progress…</div>
+      </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>

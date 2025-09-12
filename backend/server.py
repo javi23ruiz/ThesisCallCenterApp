@@ -18,6 +18,8 @@ import asyncio
 from queue import Queue
 import threading
 from fastapi.responses import Response, JSONResponse
+import random
+import time
 
 
 app = FastAPI(title="Thesis Call Center API")
@@ -35,6 +37,10 @@ app.add_middleware(
 class AskRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
+
+
+class RagScoreRequest(BaseModel):
+    text: str
 
 
 @app.get("/health")
@@ -127,6 +133,16 @@ def ask(req: AskRequest) -> dict:
         config={"configurable": {"session_id": session_id}},
     )
     return {"answer": answer}
+
+
+@app.post("/rag/score")
+def rag_score(req: RagScoreRequest) -> dict:
+    """Temporary scoring endpoint.
+    Returns a mock confidence in [0,1]. Later, replace with a real model.
+    """
+    confidence = random.random()
+    time.sleep(2)
+    return {"confidence": confidence}
 
 
 @app.post("/stt")
