@@ -52,9 +52,33 @@ function renderMessage(role, text, meta) {
   messages.scrollTop = messages.scrollHeight;
 }
 
-function updateRagSidebar(snippet) {
+async function updateRagSidebar(snippetOrQuestion) {
   const container = document.getElementById("rag-list");
-  if (!container) return;
+  if (!container) return "";
+  // Append newest card after previous ones (no clear)
+  try {
+    const question = typeof snippetOrQuestion === "string" ? snippetOrQuestion : (snippetOrQuestion && snippetOrQuestion.excerpt) || "";
+    if (question) {
+      const res = await fetch(`${apiBase}/rag/html`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && typeof data.html === "string" && data.html.trim()) {
+          const card = document.createElement("div");
+          card.className = "card";
+          card.innerHTML = data.html;
+          container.appendChild(card);
+          try { container.scrollTop = container.scrollHeight; } catch (_) {}
+          return typeof data.transcript === "string" ? data.transcript : "";
+        }
+      }
+    }
+  } catch (_) {}
+  const fallback = typeof snippetOrQuestion === "object" ? snippetOrQuestion : {
+    title: "Retrieved Document",
+    heading: "Relevant Passage",
+    excerpt: typeof snippetOrQuestion === "string" ? snippetOrQuestion : "",
+    points: ["RAG fallback", "Backend HTML generation failed"]
+  };
   const card = document.createElement("div");
   card.className = "card";
   card.innerHTML = `
@@ -62,13 +86,13 @@ function updateRagSidebar(snippet) {
       <span class="tag">Retrieved</span>
       <span class="muted">Dynamic</span>
     </div>
-    <h3>${(snippet.title || "Related Section").replace(/</g, "&lt;")}</h3>
-    <div class="highlight"><strong>${(snippet.heading || "Match").replace(/</g, "&lt;")}:</strong> ${(snippet.excerpt || "").replace(/</g, "&lt;")}</div>
-    <ul class="bullets">${(snippet.points || []).map(p => `<li>${p.replace(/</g, "&lt;")}</li>`).join("")}</ul>
+    <h3>${(fallback.title || "Related Section").replace(/</g, "&lt;")}</h3>
+    <div class="highlight"><strong>${(fallback.heading || "Match").replace(/</g, "&lt;")}</strong> ${(fallback.excerpt || "").replace(/</g, "&lt;")}</div>
+    <ul class="bullets">${(fallback.points || []).map(p => `<li>${p.replace(/</g, "&lt;")}</li>`).join("")}</ul>
   `;
   container.appendChild(card);
-  // Scroll to the bottom so the newest appears after the previous ones
   try { container.scrollTop = container.scrollHeight; } catch (_) {}
+  return "";
 }
 
 function showRagPopup(show) {
@@ -143,6 +167,18 @@ async function ask(question) {
   return { answer: data.answer, audioEnded };
 }
 
+async function speakText(text) {
+  try {
+    const audioRes = await fetch(`${apiBase}/tts`, { method: "POST", headers: { "Content-Type": "text/plain" }, body: text });
+    if (!audioRes.ok) return;
+    const buf = await audioRes.arrayBuffer();
+    const blob = new Blob([buf], { type: "audio/mpeg" });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.play().catch(() => {});
+  } catch (_) {}
+}
+
 function setupChat() {
   const form = document.getElementById("chat-form");
   const input = document.getElementById("question");
@@ -212,18 +248,19 @@ function setupChat() {
             renderMessage("user", finalText, { confidence, invoked });
             if (invoked) {
               showRagPopup(true);
-              updateRagSidebar({
-                title: "Retrieved Document",
-                heading: "Relevant Passage",
-                excerpt: finalText,
-                points: ["Snippet generated from user utterance", "Confidence > 0.5", "RAG mocked"],
-              });
+              const transcript = await updateRagSidebar(finalText);
+              showRagPopup(false);
+              if (transcript) {
+                renderMessage("assistant", transcript);
+                speakText(transcript);
+              }
             }
             setBusy(true);
             stopStreaming();
-            const { answer } = await ask(finalText);
-            renderMessage("assistant", answer);
-            if (invoked) { showRagPopup(false); }
+            if (!invoked) {
+              const { answer } = await ask(finalText);
+              renderMessage("assistant", answer);
+            }
             setBusy(false);
           }
         } else {
@@ -273,18 +310,19 @@ function setupChat() {
     renderMessage("user", q, { confidence, invoked });
     if (invoked) {
       showRagPopup(true);
-      updateRagSidebar({
-        title: "Retrieved Document",
-        heading: "Relevant Passage",
-        excerpt: q,
-        points: ["Snippet generated from user message", "Confidence > 0.5", "RAG mocked"],
-      });
+      const transcript = await updateRagSidebar(q);
+      showRagPopup(false);
+      if (transcript) {
+        renderMessage("assistant", transcript);
+        speakText(transcript);
+      }
     }
     try {
       setBusy(true);
-      const { answer } = await ask(q);
-      renderMessage("assistant", answer);
-      if (invoked) { showRagPopup(false); }
+      if (!invoked) {
+        const { answer } = await ask(q);
+        renderMessage("assistant", answer);
+      }
       setBusy(false);
     } catch (err) {
       renderMessage("assistant", "Oops, something went wrong.");

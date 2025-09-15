@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
+import re
 import os
 
 from dotenv import load_dotenv
@@ -144,6 +145,148 @@ def rag_score(req: RagScoreRequest) -> dict:
     time.sleep(2)
     return {"confidence": confidence}
 
+
+class RagHtmlRequest(BaseModel):
+    question: str
+
+
+@app.post("/rag/html")
+def rag_html(req: RagHtmlRequest) -> dict:
+    """Generate the RAG sidebar HTML fragment via GPT-4o.
+
+    For now, the retrieved context is mocked. Later this will be replaced with
+    real retrieval results from a database or vector index.
+    """
+    if not _openai_api_key:
+        return {"html": "", "error": "OPENAI_API_KEY not configured"}
+
+    # Mock retrieved context: list of candidate documents
+    retrieved_context: List[Dict[str, Any]] = [
+        {
+            "name": "Auto Insurance Policy Basics",
+            "categories": ["Policy", "Auto"],
+            "url": "https://example.com/docs/auto-policy-basics",
+            "score": 0.83,
+            "passage": (
+                "Comprehensive coverage helps pay to repair or replace your car if it is stolen "
+                "or damaged by incidents other than collision, such as fire, vandalism, or hail."
+            ),
+        },
+        {
+            "name": "Claims: Step-by-Step Guide",
+            "categories": ["Claims"],
+            "url": "https://example.com/docs/claims-guide",
+            "score": 0.78,
+            "passage": (
+                "File a claim within 24 hours when safe. Provide photos, police reports when applicable, "
+                "and your policy number. A claims adjuster will contact you within two business days."
+            ),
+        },
+        {
+            "name": "Home Insurance Endorsements",
+            "categories": ["Policy", "Home"],
+            "url": "https://example.com/docs/home-endorsements",
+            "score": 0.65,
+            "passage": (
+                "Scheduled personal property endorsements increase coverage limits for high-value items "
+                "like jewelry or fine art beyond standard policy caps."
+            ),
+        },
+    ]
+
+    # System instruction preserving the existing HTML structure and classes
+    system_prompt = (
+        "You are a UI snippet generator for the sidebar 'Retrieved Content' card. "
+        "Return ONLY a valid HTML fragment (no backticks, no explanations, no outer wrappers). "
+        "Keep the exact structure and classes below.\n\n"
+        "<div class=\"card-header\">\n"
+        "  {{category_tags}}\n"
+        "  <span class=\"muted\">Dynamic</span>\n"
+        "</div>\n"
+        "<h3>{{document_name}}</h3>\n"
+        "<div class=\"highlight\"><strong>Relevant Passage:</strong> {{excerpt}}</div>\n"
+        "<ul class=\"bullets\">\n"
+        "  {{bullets}}\n"
+        "</ul>\n\n"
+        "Rules:\n"
+        "- Use USER_QUESTION and RETRIEVED_CONTEXT (JSON array of docs with fields like name/title, categories[], score/confidence, url, passage/snippet).\n"
+        "- Pick the single best document (highest confidence/score or best semantic match).\n"
+        "- category_tags: for every category of the chosen document, output a separate <span class=\\\"tag\\\">Category</span>. "
+        "If none, output <span class=\\\"tag\\\">Uncategorized</span>. Use the same 'tag' class only.\n"
+        "- document_name: the chosen document’s name/title (concise, escaped).\n"
+        "- excerpt: 1–2 sentences (≤200 chars) summarizing the matched passage; escape HTML special chars.\n"
+        "- bullets: 3–5 <li> items including: relation to the question, 'Confidence: 0.xx' if available, source URL or title, and any useful section/date/caveat.\n"
+        "- No <script>, no inline handlers/styles. Escape <, >, &, \" in dynamic text.\n"
+        "- If a field is unknown, omit that <li>; never fabricate.\n"
+    )
+
+    # Build the LangChain prompt
+    html_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt),
+            (
+                "human",
+                (
+                    "USER_QUESTION: {user_question}\n"
+                    "RETRIEVED_CONTEXT (JSON): {retrieved_context_json}\n"
+                    "Output only the HTML fragment."
+                ),
+            ),
+        ]
+    )
+
+    llm_for_html = ChatOpenAI(model="gpt-4o", temperature=0.2)
+    chain = html_prompt | llm_for_html | StrOutputParser()
+
+    import json as _json
+
+    html_fragment: str = chain.invoke(
+        {
+            "user_question": req.question,
+            "retrieved_context_json": _json.dumps(retrieved_context, ensure_ascii=False),
+        }
+    )
+
+    def _strip_code_fences(text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+        s = text.strip()
+        # Remove leading ```lang fences
+        s = re.sub(r"^\s*```[a-zA-Z]*\s*\n?", "", s, count=1)
+        # Remove trailing ``` fence
+        s = re.sub(r"\n?\s*```\s*$", "", s, count=1)
+        # Also remove any stray triple-backtick lines that survived
+        s = s.replace("```html", "").replace("```HTML", "").replace("```", "")
+        return s.strip()
+
+    html_fragment = _strip_code_fences(html_fragment)
+
+    # Generate a concise transcript message for the chat using the HTML summary
+    transcript_system = (
+        "You are a helpful insurance call center agent. Based on the HTML RAG summary below, "
+        "compose a concise response for the live transcript. Keep it factual, warm, and clear. "
+        "Do not mention RAG, retrieval, categories, or the fact that this came from HTML. "
+        "Strict limit: write 2–3 short sentences ONLY (no bullets). If the summary doesn't fully answer, "
+        "briefly state what's missing and suggest one next step in the same 2–3 sentences."
+    )
+    transcript_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", transcript_system),
+            (
+                "human",
+                (
+                    "USER QUESTION:\n{user_question}\n\n"
+                    "RAG HTML SUMMARY:\n{rag_html}\n\n"
+                    "Now write the transcript response."
+                ),
+            ),
+        ]
+    )
+    llm_text = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+    text_chain = transcript_prompt | llm_text | StrOutputParser()
+    transcript_text: str = text_chain.invoke({"user_question": req.question, "rag_html": html_fragment})
+
+    return {"html": html_fragment, "transcript": transcript_text}
 
 @app.post("/stt")
 async def stt(
